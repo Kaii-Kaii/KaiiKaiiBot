@@ -8,7 +8,7 @@ lavalink:
       snapshot: false
 
   server:
-    password: "${LAVALINK_PASSWORD:KaiiKaii-Lavalink-2026}"
+    password: "KaiiKaii-Lavalink-2026"
 
     sources:
       youtube: false
