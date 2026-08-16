@@ -7,17 +7,12 @@ import {
     ApplicationCommandOptionType
 } from 'discord.js';
 
-import {
-    Connectors
-} from 'shoukaku';
+import { Connectors } from 'shoukaku';
+import { Kazagumo } from 'kazagumo';
 
-import {
-    Kazagumo
-} from 'kazagumo';
-
-// =====================================
+// =====================================================
 // ENV
-// =====================================
+// =====================================================
 
 const DISCORD_TOKEN =
     process.env.DISCORD_TOKEN;
@@ -28,39 +23,36 @@ const GUILD_ID =
 const VOICE_CHANNEL_ID =
     process.env.VOICE_CHANNEL_ID;
 
-const MUSIC_TEXT_CHANNEL_ID =
-    process.env.MUSIC_TEXT_CHANNEL_ID ||
-    VOICE_CHANNEL_ID;
-
+// Password Lavalink cố định.
+// Phải giống application.yml.
 const LAVALINK_PASSWORD =
-    process.env.LAVALINK_PASSWORD ||
-    'kaiikaii-local';
+    'KaiiKaii-Lavalink-2026';
 
-// =====================================
+// =====================================================
 // KIỂM TRA ENV
-// =====================================
+// =====================================================
 
 if (!DISCORD_TOKEN) {
     throw new Error(
-        'Thiếu DISCORD_TOKEN.'
+        'Thiếu DISCORD_TOKEN trong .env'
     );
 }
 
 if (!GUILD_ID) {
     throw new Error(
-        'Thiếu GUILD_ID.'
+        'Thiếu GUILD_ID trong .env'
     );
 }
 
 if (!VOICE_CHANNEL_ID) {
     throw new Error(
-        'Thiếu VOICE_CHANNEL_ID.'
+        'Thiếu VOICE_CHANNEL_ID trong .env'
     );
 }
 
-// =====================================
+// =====================================================
 // DISCORD CLIENT
-// =====================================
+// =====================================================
 
 const client = new Client({
     intents: [
@@ -69,9 +61,9 @@ const client = new Client({
     ]
 });
 
-// =====================================
-// LAVALINK NODES
-// =====================================
+// =====================================================
+// LAVALINK NODE
+// =====================================================
 
 const nodes = [
     {
@@ -85,28 +77,21 @@ const nodes = [
     }
 ];
 
-// Shoukaku node config dùng `url`, `auth`, `secure` theo API hiện tại.
-
-// =====================================
+// =====================================================
 // KAZAGUMO
-// =====================================
+// =====================================================
 
 const kazagumo = new Kazagumo(
     {
         /*
-         * Khi user nhập text bình thường:
+         * QUAN TRỌNG:
          *
          * /play faded alan walker
          *
-         * Kazagumo sẽ dùng YouTube search.
+         * sẽ search SoundCloud thay vì YouTube.
          */
-        defaultSearchEngine: 'youtube',
+        defaultSearchEngine: 'soundcloud',
 
-        /*
-         * Cực kỳ quan trọng:
-         * gửi voice payload từ Lavalink connector
-         * về Discord gateway.
-         */
         send: (
             guildId,
             payload
@@ -131,19 +116,63 @@ const kazagumo = new Kazagumo(
     nodes
 );
 
-// =====================================
+// =====================================================
 // STATE
-// =====================================
+// =====================================================
 
 let discordReady = false;
 let lavalinkReady = false;
 
-// =====================================
-// TẠO / GIỮ PLAYER 24/7
-// =====================================
+let rejoinRunning = false;
+
+let rejoinTimer = null;
+
+// =====================================================
+// HELPER
+// =====================================================
+
+function sleep(ms) {
+    return new Promise(
+        resolve =>
+            setTimeout(resolve, ms)
+    );
+}
+
+// =====================================================
+// LẤY VOICE CHANNEL HIỆN TẠI CỦA BOT
+// =====================================================
+
+function getBotVoiceChannelId() {
+    if (!client.user) {
+        return null;
+    }
+
+    const guild =
+        client.guilds.cache.get(
+            GUILD_ID
+        );
+
+    if (!guild) {
+        return null;
+    }
+
+    const voiceState =
+        guild.voiceStates.cache.get(
+            client.user.id
+        );
+
+    return (
+        voiceState?.channelId ||
+        null
+    );
+}
+
+// =====================================================
+// TẠO / LẤY PLAYER
+// =====================================================
 
 async function ensurePlayer(
-    textChannelId = MUSIC_TEXT_CHANNEL_ID
+    textChannelId = VOICE_CHANNEL_ID
 ) {
     if (
         !discordReady ||
@@ -157,10 +186,52 @@ async function ensurePlayer(
             GUILD_ID
         );
 
-    // Nếu đã tồn tại thì dùng lại
+    // =================================================
+    // PLAYER ĐÃ TỒN TẠI
+    // =================================================
+
     if (player) {
+
+        /*
+         * Slash command được gọi ở channel nào
+         * thì cập nhật textId channel đó.
+         */
+        if (textChannelId) {
+            try {
+                player.setTextChannel(
+                    textChannelId
+                );
+            } catch {
+                // Không quan trọng
+            }
+        }
+
+        /*
+         * Player tồn tại nhưng bot có thể
+         * đã bị kick / kéo sang room khác.
+         */
+        const currentVoice =
+            getBotVoiceChannelId();
+
+        if (
+            currentVoice !==
+            VOICE_CHANNEL_ID
+        ) {
+            console.log(
+                '🔄 Player còn nhưng bot sai voice. Đang đưa về room chính...'
+            );
+
+            player.setVoiceChannel(
+                VOICE_CHANNEL_ID
+            );
+        }
+
         return player;
     }
+
+    // =================================================
+    // CHƯA CÓ PLAYER
+    // =================================================
 
     console.log(
         '🎧 Đang tạo music player...'
@@ -168,15 +239,17 @@ async function ensurePlayer(
 
     player =
         await kazagumo.createPlayer({
-            guildId: GUILD_ID,
-
-            textId:
-                textChannelId,
+            guildId:
+                GUILD_ID,
 
             voiceId:
                 VOICE_CHANNEL_ID,
 
-            volume: 80
+            textId:
+                textChannelId,
+
+            volume:
+                80
         });
 
     console.log(
@@ -186,9 +259,141 @@ async function ensurePlayer(
     return player;
 }
 
-// =====================================
-// LAVALINK EVENTS
-// =====================================
+// =====================================================
+// ÉP BOT QUAY LẠI ROOM CHÍNH
+// =====================================================
+
+async function forceReturnToVoice(
+    reason = 'unknown'
+) {
+    if (
+        rejoinRunning ||
+        !discordReady ||
+        !lavalinkReady ||
+        !client.user
+    ) {
+        return;
+    }
+
+    const currentVoice =
+        getBotVoiceChannelId();
+
+    /*
+     * Đã ở đúng room rồi
+     * thì không làm gì.
+     */
+    if (
+        currentVoice ===
+        VOICE_CHANNEL_ID
+    ) {
+        return;
+    }
+
+    rejoinRunning = true;
+
+    try {
+        console.log(
+            `🔁 KaiiKaii không ở room chính (${reason}). Đang quay lại...`
+        );
+
+        let player =
+            kazagumo.players.get(
+                GUILD_ID
+            );
+
+        /*
+         * Nếu player vẫn còn:
+         * ép Discord voice state về channel chính.
+         */
+        if (player) {
+            player.setVoiceChannel(
+                VOICE_CHANNEL_ID
+            );
+        } else {
+            /*
+             * Nếu player mất luôn:
+             * tạo lại từ đầu.
+             */
+            player =
+                await kazagumo.createPlayer({
+                    guildId:
+                        GUILD_ID,
+
+                    voiceId:
+                        VOICE_CHANNEL_ID,
+
+                    textId:
+                        VOICE_CHANNEL_ID,
+
+                    volume:
+                        80
+                });
+        }
+
+        /*
+         * Chờ Discord cập nhật voice state.
+         */
+        await sleep(3000);
+
+        const afterVoice =
+            getBotVoiceChannelId();
+
+        if (
+            afterVoice ===
+            VOICE_CHANNEL_ID
+        ) {
+            console.log(
+                '✅ KaiiKaii đã quay lại room chính.'
+            );
+        } else {
+            console.warn(
+                '⚠️ Chưa vào lại được voice. Watchdog sẽ thử tiếp.'
+            );
+        }
+
+    } catch (error) {
+        console.error(
+            '❌ Rejoin voice lỗi:',
+            error
+        );
+    } finally {
+        rejoinRunning = false;
+    }
+}
+
+// =====================================================
+// LÊN LỊCH REJOIN
+// =====================================================
+
+function scheduleVoiceReturn(
+    reason
+) {
+    /*
+     * Tránh Discord bắn nhiều VoiceStateUpdate
+     * cùng lúc làm bot spam join.
+     */
+    if (rejoinTimer) {
+        clearTimeout(
+            rejoinTimer
+        );
+    }
+
+    rejoinTimer =
+        setTimeout(
+            async () => {
+                rejoinTimer = null;
+
+                await forceReturnToVoice(
+                    reason
+                );
+            },
+            1500
+        );
+}
+
+// =====================================================
+// SHOUKAKU / LAVALINK EVENTS
+// =====================================================
 
 kazagumo.shoukaku.on(
     'ready',
@@ -235,26 +440,14 @@ kazagumo.shoukaku.on(
             code,
             reason || ''
         );
-    }
-);
-
-kazagumo.shoukaku.on(
-    'disconnect',
-    (
-        name,
-        count
-    ) => {
-        console.warn(
-            `🔌 Lavalink ${name} disconnect. Players: ${count}`
-        );
 
         lavalinkReady = false;
     }
 );
 
-// =====================================
-// KAZAGUMO MUSIC EVENTS
-// =====================================
+// =====================================================
+// MUSIC EVENTS
+// =====================================================
 
 kazagumo.on(
     'playerStart',
@@ -280,7 +473,9 @@ kazagumo.on(
         track
     ) => {
         console.log(
-            `✅ Kết thúc: ${track?.title || 'Unknown'}`
+            `✅ Kết thúc: ${track?.title ||
+            'Unknown'
+            }`
         );
 
         player.data.set(
@@ -296,10 +491,10 @@ kazagumo.on(
         player
     ) => {
         /*
-         * KHÔNG destroy player.
+         * TUYỆT ĐỐI KHÔNG destroy.
          *
-         * Khác sample Kazagumo mặc định:
-         * bot của mình phải ở voice 24/7.
+         * Queue hết nhưng bot vẫn
+         * treo voice 24/7.
          */
 
         player.data.set(
@@ -313,9 +508,9 @@ kazagumo.on(
     }
 );
 
-// =====================================
+// =====================================================
 // DISCORD READY
-// =====================================
+// =====================================================
 
 client.once(
     Events.ClientReady,
@@ -333,20 +528,22 @@ client.once(
                 GUILD_ID
             );
 
-        // =================================
-        // REGISTER SLASH COMMANDS
-        // =================================
+        // =============================================
+        // SLASH COMMANDS
+        // =============================================
 
         await guild.commands.set([
             {
-                name: 'play',
+                name:
+                    'play',
 
                 description:
-                    'Phát nhạc bằng tên bài, YouTube hoặc Spotify',
+                    'Phát nhạc bằng tên bài hoặc link',
 
                 options: [
                     {
-                        name: 'query',
+                        name:
+                            'query',
 
                         description:
                             'Tên bài hát hoặc link',
@@ -354,66 +551,78 @@ client.once(
                         type:
                             ApplicationCommandOptionType.String,
 
-                        required: true
+                        required:
+                            true
                     }
                 ]
             },
 
             {
-                name: 'pause',
+                name:
+                    'pause',
 
                 description:
-                    'Tạm dừng bài đang phát'
+                    'Tạm dừng nhạc'
             },
 
             {
-                name: 'resume',
+                name:
+                    'resume',
 
                 description:
-                    'Tiếp tục bài đang pause'
+                    'Tiếp tục phát nhạc'
             },
 
             {
-                name: 'skip',
+                name:
+                    'skip',
 
                 description:
                     'Bỏ qua bài hiện tại'
             },
 
             {
-                name: 'stop',
+                name:
+                    'stop',
 
                 description:
-                    'Dừng nhạc và xoá toàn bộ queue'
+                    'Dừng nhạc và xoá queue'
             },
 
             {
-                name: 'queue',
+                name:
+                    'queue',
 
                 description:
-                    'Xem hàng đợi nhạc'
+                    'Xem hàng đợi'
             },
 
             {
-                name: 'volume',
+                name:
+                    'volume',
 
                 description:
                     'Chỉnh âm lượng',
 
                 options: [
                     {
-                        name: 'percent',
+                        name:
+                            'percent',
 
                         description:
-                            'Âm lượng từ 0 đến 150',
+                            'Âm lượng 0 - 150',
 
                         type:
                             ApplicationCommandOptionType.Integer,
 
-                        required: true,
+                        required:
+                            true,
 
-                        min_value: 0,
-                        max_value: 150
+                        min_value:
+                            0,
+
+                        max_value:
+                            150
                     }
                 ]
             }
@@ -423,10 +632,10 @@ client.once(
             '🎛️ Slash commands đã sẵn sàng'
         );
 
-        /*
-         * Nếu Lavalink Ready trước Discord
-         * thì đoạn này sẽ tạo player.
-         */
+        // =============================================
+        // AUTO JOIN KHI BOT START
+        // =============================================
+
         try {
             await ensurePlayer();
         } catch (error) {
@@ -438,9 +647,119 @@ client.once(
     }
 );
 
-// =====================================
-// INTERACTION HANDLER
-// =====================================
+// =====================================================
+// QUAN TRỌNG:
+// KICK / MOVE BOT → TỰ QUAY VỀ
+// =====================================================
+
+client.on(
+    Events.VoiceStateUpdate,
+    (
+        oldState,
+        newState
+    ) => {
+        /*
+         * Chỉ quan tâm voice state
+         * của chính KaiiKaii.
+         */
+        if (
+            !client.user ||
+            newState.id !==
+            client.user.id
+        ) {
+            return;
+        }
+
+        if (
+            newState.guild.id !==
+            GUILD_ID
+        ) {
+            return;
+        }
+
+        const oldChannel =
+            oldState.channelId;
+
+        const newChannel =
+            newState.channelId;
+
+        /*
+         * Không thay đổi channel.
+         */
+        if (
+            oldChannel ===
+            newChannel
+        ) {
+            return;
+        }
+
+        console.log(
+            `🔊 Voice thay đổi: ${oldChannel || 'none'} → ${newChannel || 'none'}`
+        );
+
+        /*
+         * Bot đang đúng room chính
+         * thì thôi.
+         */
+        if (
+            newChannel ===
+            VOICE_CHANNEL_ID
+        ) {
+            console.log(
+                '✅ KaiiKaii đang ở đúng room chính.'
+            );
+
+            return;
+        }
+
+        /*
+         * Nếu:
+         *
+         * - kick bot
+         * - disconnect bot
+         * - kéo bot sang room khác
+         *
+         * đều quay lại room chính.
+         */
+        scheduleVoiceReturn(
+            newChannel
+                ? 'bị chuyển room'
+                : 'bị kick khỏi voice'
+        );
+    }
+);
+
+// =====================================================
+// WATCHDOG 20 GIÂY
+// =====================================================
+
+setInterval(
+    async () => {
+        if (
+            !discordReady ||
+            !lavalinkReady
+        ) {
+            return;
+        }
+
+        const currentVoice =
+            getBotVoiceChannelId();
+
+        if (
+            currentVoice !==
+            VOICE_CHANNEL_ID
+        ) {
+            await forceReturnToVoice(
+                'watchdog'
+            );
+        }
+    },
+    20000
+);
+
+// =====================================================
+// INTERACTION
+// =====================================================
 
 client.on(
     Events.InteractionCreate,
@@ -453,6 +772,9 @@ client.on(
             return;
         }
 
+        /*
+         * Chỉ server chính.
+         */
         if (
             interaction.guildId !==
             GUILD_ID
@@ -462,9 +784,9 @@ client.on(
 
         try {
 
-            // =================================
+            // =================================================
             // /play
-            // =================================
+            // =================================================
 
             if (
                 interaction.commandName ===
@@ -485,7 +807,7 @@ client.on(
 
                 if (!player) {
                     await interaction.editReply(
-                        '❌ Lavalink chưa sẵn sàng.'
+                        '❌ Music player chưa sẵn sàng.'
                     );
 
                     return;
@@ -496,16 +818,11 @@ client.on(
                 );
 
                 /*
-                 * Nếu query là:
+                 * Tên bài bình thường:
                  *
-                 * "faded alan walker"
-                 * -> YouTube search
+                 * faded alan walker
                  *
-                 * youtube.com/... / youtu.be/...
-                 * -> YouTube source plugin
-                 *
-                 * open.spotify.com/...
-                 * -> LavaSrc Spotify
+                 * => SoundCloud search
                  */
                 const result =
                     await kazagumo.search(
@@ -527,9 +844,9 @@ client.on(
                     return;
                 }
 
-                // =============================
+                // =================================================
                 // PLAYLIST
-                // =============================
+                // =================================================
 
                 if (
                     result.type ===
@@ -543,7 +860,7 @@ client.on(
                         !player.playing &&
                         !player.paused
                     ) {
-                        player.play();
+                        await player.play();
                     }
 
                     await interaction.editReply(
@@ -553,9 +870,9 @@ client.on(
                     return;
                 }
 
-                // =============================
+                // =================================================
                 // SINGLE TRACK
-                // =============================
+                // =================================================
 
                 const track =
                     result.tracks[0];
@@ -568,7 +885,7 @@ client.on(
                     !player.playing &&
                     !player.paused
                 ) {
-                    player.play();
+                    await player.play();
                 }
 
                 await interaction.editReply(
@@ -578,9 +895,9 @@ client.on(
                 return;
             }
 
-            // =================================
-            // PLAYER
-            // =================================
+            // =================================================
+            // LẤY PLAYER
+            // =================================================
 
             const player =
                 kazagumo.players.get(
@@ -595,15 +912,17 @@ client.on(
                 return;
             }
 
-            // =================================
+            // =================================================
             // /pause
-            // =================================
+            // =================================================
 
             if (
                 interaction.commandName ===
                 'pause'
             ) {
-                if (!player.playing) {
+                if (
+                    !player.playing
+                ) {
                     await interaction.reply(
                         '❌ Hiện không có bài đang phát.'
                     );
@@ -611,7 +930,7 @@ client.on(
                     return;
                 }
 
-                await player.pause(
+                player.pause(
                     true
                 );
 
@@ -622,15 +941,17 @@ client.on(
                 return;
             }
 
-            // =================================
+            // =================================================
             // /resume
-            // =================================
+            // =================================================
 
             if (
                 interaction.commandName ===
                 'resume'
             ) {
-                if (!player.paused) {
+                if (
+                    !player.paused
+                ) {
                     await interaction.reply(
                         '❌ Nhạc hiện không bị pause.'
                     );
@@ -638,7 +959,7 @@ client.on(
                     return;
                 }
 
-                await player.pause(
+                player.pause(
                     false
                 );
 
@@ -649,9 +970,9 @@ client.on(
                 return;
             }
 
-            // =================================
+            // =================================================
             // /skip
-            // =================================
+            // =================================================
 
             if (
                 interaction.commandName ===
@@ -668,7 +989,7 @@ client.on(
                     return;
                 }
 
-                await player.skip();
+                player.skip();
 
                 await interaction.reply(
                     '⏭️ Đã skip.'
@@ -677,16 +998,16 @@ client.on(
                 return;
             }
 
-            // =================================
+            // =================================================
             // /stop
-            // =================================
+            // =================================================
 
             if (
                 interaction.commandName ===
                 'stop'
             ) {
                 /*
-                 * Xoá queue
+                 * Xoá toàn bộ queue.
                  */
                 while (
                     player.queue.length > 0
@@ -695,16 +1016,15 @@ client.on(
                 }
 
                 /*
-                 * Stop track hiện tại trực tiếp
-                 * ở Shoukaku.
+                 * Dừng bài hiện tại
+                 * NHƯNG KHÔNG destroy player.
                  *
-                 * KHÔNG destroy player
-                 * -> bot vẫn ở voice.
+                 * Bot vẫn nằm voice.
                  */
                 try {
                     await player.shoukaku.stopTrack();
                 } catch {
-                    // Không có track cũng không sao
+                    // Không có bài cũng không sao.
                 }
 
                 player.data.set(
@@ -719,9 +1039,9 @@ client.on(
                 return;
             }
 
-            // =================================
+            // =================================================
             // /volume
-            // =================================
+            // =================================================
 
             if (
                 interaction.commandName ===
@@ -744,15 +1064,16 @@ client.on(
                 return;
             }
 
-            // =================================
+            // =================================================
             // /queue
-            // =================================
+            // =================================================
 
             if (
                 interaction.commandName ===
                 'queue'
             ) {
                 const current =
+                    player.queue.current ||
                     player.data.get(
                         'currentTrack'
                     );
@@ -770,7 +1091,6 @@ client.on(
 
                 let message = '';
 
-                // Current
                 if (current) {
                     message +=
                         '🎵 **Đang phát**\n';
@@ -779,24 +1099,31 @@ client.on(
                         `**${current.title}** — ${current.author}\n\n`;
                 }
 
-                // Queue
                 if (
                     player.queue.length > 0
                 ) {
                     message +=
                         '📃 **Tiếp theo**\n';
 
-                    player.queue
-                        .slice(0, 10)
-                        .forEach(
-                            (
-                                track,
-                                index
-                            ) => {
-                                message +=
-                                    `${index + 1}. ${track.title} — ${track.author}\n`;
-                            }
-                        );
+                    const nextTracks =
+                        Array
+                            .from(
+                                player.queue
+                            )
+                            .slice(
+                                0,
+                                10
+                            );
+
+                    nextTracks.forEach(
+                        (
+                            track,
+                            index
+                        ) => {
+                            message +=
+                                `${index + 1}. ${track.title} — ${track.author}\n`;
+                        }
+                    );
 
                     if (
                         player.queue.length >
@@ -820,39 +1147,52 @@ client.on(
                 error
             );
 
-            const message =
-                `❌ Lỗi: ${error?.message ||
-                'Không xác định'
-                }`;
+            const errorMessage =
+                error?.message ||
+                'Không xác định';
 
-            if (
-                interaction.deferred
+            const message =
+                `❌ Lỗi: ${errorMessage}`;
+
+            try {
+                if (
+                    interaction.deferred
+                ) {
+                    await interaction.editReply(
+                        message
+                    );
+                } else if (
+                    interaction.replied
+                ) {
+                    await interaction.followUp(
+                        message
+                    );
+                } else {
+                    await interaction.reply(
+                        message
+                    );
+                }
+            } catch (
+            replyError
             ) {
-                await interaction.editReply(
-                    message
-                );
-            } else if (
-                interaction.replied
-            ) {
-                await interaction.followUp(
-                    message
-                );
-            } else {
-                await interaction.reply(
-                    message
+                console.error(
+                    '❌ Không gửi được error reply:',
+                    replyError
                 );
             }
         }
     }
 );
 
-// =====================================
+// =====================================================
 // GLOBAL ERRORS
-// =====================================
+// =====================================================
 
 process.on(
     'unhandledRejection',
-    (error) => {
+    (
+        error
+    ) => {
         console.error(
             '❌ Unhandled rejection:',
             error
@@ -862,7 +1202,9 @@ process.on(
 
 process.on(
     'uncaughtException',
-    (error) => {
+    (
+        error
+    ) => {
         console.error(
             '❌ Uncaught exception:',
             error
@@ -870,9 +1212,9 @@ process.on(
     }
 );
 
-// =====================================
+// =====================================================
 // LOGIN
-// =====================================
+// =====================================================
 
 client.login(
     DISCORD_TOKEN
