@@ -12,13 +12,18 @@ import {
 } from './voice/voiceManager.js';
 
 import {
-    attachPlayerToVoice,
-    playTestTone
+    addTrack,
+    pauseMusic,
+    resumeMusic,
+    skipMusic,
+    stopMusic,
+    setVolume,
+    getMusicStatus
 } from './music/playerManager.js';
 
-// ============================
-// DISCORD CLIENT
-// ============================
+// =============================
+// CLIENT
+// =============================
 
 const client = new Client({
     intents: [
@@ -27,9 +32,9 @@ const client = new Client({
     ]
 });
 
-// ============================
+// =============================
 // READY
-// ============================
+// =============================
 
 client.once(
     Events.ClientReady,
@@ -39,37 +44,93 @@ client.once(
         );
 
         try {
-            // Kết nối voice
-            await connectToVoice(readyClient);
-
-            // Gắn AudioPlayer vào VoiceConnection
-            attachPlayerToVoice(
-                process.env.GUILD_ID
+            await connectToVoice(
+                readyClient
             );
-
-            // ============================
-            // REGISTER TEST COMMAND
-            // ============================
 
             const guild =
                 await readyClient.guilds.fetch(
                     process.env.GUILD_ID
                 );
 
+            // Slash commands riêng server
             await guild.commands.set([
                 {
-                    name: 'testmusic',
+                    name: 'play',
                     description:
-                        'Test hệ thống phát âm thanh của KaiiKaii'
+                        'Phát hoặc thêm nhạc vào hàng đợi',
+
+                    options: [
+                        {
+                            name: 'url',
+                            description:
+                                'Direct URL tới file/stream audio',
+                            type: 3,
+                            required: true
+                        },
+
+                        {
+                            name: 'name',
+                            description:
+                                'Tên bài hát',
+                            type: 3,
+                            required: false
+                        }
+                    ]
+                },
+
+                {
+                    name: 'pause',
+                    description:
+                        'Tạm dừng nhạc'
+                },
+
+                {
+                    name: 'resume',
+                    description:
+                        'Tiếp tục phát nhạc'
+                },
+
+                {
+                    name: 'skip',
+                    description:
+                        'Bỏ qua bài hiện tại'
+                },
+
+                {
+                    name: 'stop',
+                    description:
+                        'Dừng nhạc và xoá queue'
+                },
+
+                {
+                    name: 'queue',
+                    description:
+                        'Xem hàng đợi nhạc'
+                },
+
+                {
+                    name: 'volume',
+                    description:
+                        'Chỉnh âm lượng',
+
+                    options: [
+                        {
+                            name: 'percent',
+                            description:
+                                'Âm lượng từ 0 đến 150',
+                            type: 4,
+                            required: true,
+
+                            min_value: 0,
+                            max_value: 150
+                        }
+                    ]
                 }
             ]);
 
             console.log(
-                '🎵 Music system đã sẵn sàng'
-            );
-
-            console.log(
-                '🧪 Slash command /testmusic đã sẵn sàng'
+                '🎵 Music commands đã sẵn sàng'
             );
         } catch (error) {
             console.error(
@@ -80,22 +141,21 @@ client.once(
     }
 );
 
-// ============================
-// VOICE STATE
-// ============================
+// =============================
+// VOICE RECONNECT
+// =============================
 
 client.on(
     Events.VoiceStateUpdate,
     (oldState, newState) => {
-        // Không phải chính bot
         if (
             !client.user ||
-            newState.id !== client.user.id
+            newState.id !==
+                client.user.id
         ) {
             return;
         }
 
-        // Không phải server cần theo dõi
         if (
             newState.guild.id !==
             process.env.GUILD_ID
@@ -103,25 +163,24 @@ client.on(
             return;
         }
 
-        const targetChannelId =
+        const target =
             process.env.VOICE_CHANNEL_ID;
 
-        // Đang đúng phòng
+        // đang ở đúng phòng
         if (
             newState.channelId ===
-            targetChannelId
+            target
         ) {
             return;
         }
 
-        // Bị disconnect
         if (!newState.channelId) {
             console.log(
-                '😵 KaiiKaii bị ngắt khỏi voice'
+                '😵 Bot bị disconnect khỏi voice'
             );
         } else {
             console.log(
-                '👀 KaiiKaii bị kéo sang room khác'
+                '👀 Bot bị kéo sang room khác'
             );
         }
 
@@ -129,9 +188,9 @@ client.on(
     }
 );
 
-// ============================
-// SLASH COMMANDS
-// ============================
+// =============================
+// COMMANDS
+// =============================
 
 client.on(
     Events.InteractionCreate,
@@ -142,39 +201,296 @@ client.on(
             return;
         }
 
-        // ============================
-        // /testmusic
-        // ============================
+        try {
+            // =====================
+            // /play
+            // =====================
 
-        if (
-            interaction.commandName ===
-            'testmusic'
-        ) {
-            try {
-                playTestTone();
+            if (
+                interaction.commandName ===
+                'play'
+            ) {
+                const url =
+                    interaction.options.getString(
+                        'url',
+                        true
+                    );
+
+                const customName =
+                    interaction.options.getString(
+                        'name'
+                    );
+
+                // URL validation
+                let parsed;
+
+                try {
+                    parsed =
+                        new URL(url);
+                } catch {
+                    await interaction.reply({
+                        content:
+                            '❌ URL không hợp lệ.'
+                    });
+
+                    return;
+                }
+
+                if (
+                    ![
+                        'http:',
+                        'https:'
+                    ].includes(
+                        parsed.protocol
+                    )
+                ) {
+                    await interaction.reply({
+                        content:
+                            '❌ Chỉ hỗ trợ HTTP/HTTPS.'
+                    });
+
+                    return;
+                }
+
+                const title =
+                    customName ||
+                    decodeURIComponent(
+                        parsed.pathname
+                            .split('/')
+                            .pop()
+                    ) ||
+                    'Unknown Track';
+
+                const result =
+                    await addTrack(
+                        interaction.guildId,
+                        {
+                            title,
+                            url,
+
+                            requestedBy:
+                                interaction.user
+                                    .username
+                        }
+                    );
+
+                if (
+                    result.position === 0
+                ) {
+                    await interaction.reply({
+                        content:
+                            `▶️ Đang phát **${title}**`
+                    });
+                } else {
+                    await interaction.reply({
+                        content:
+                            `➕ Đã thêm **${title}** vào queue`
+                    });
+                }
+
+                return;
+            }
+
+            // =====================
+            // /pause
+            // =====================
+
+            if (
+                interaction.commandName ===
+                'pause'
+            ) {
+                const ok =
+                    pauseMusic();
 
                 await interaction.reply({
-                    content:
-                        '🎵 Đang test audio 440Hz trong 3 giây!'
+                    content: ok
+                        ? '⏸️ Đã pause.'
+                        : '❌ Không có nhạc đang phát.'
                 });
-            } catch (error) {
-                console.error(
-                    '❌ Test music lỗi:',
-                    error
-                );
+
+                return;
+            }
+
+            // =====================
+            // /resume
+            // =====================
+
+            if (
+                interaction.commandName ===
+                'resume'
+            ) {
+                const ok =
+                    resumeMusic();
+
+                await interaction.reply({
+                    content: ok
+                        ? '▶️ Tiếp tục phát.'
+                        : '❌ Không có nhạc đang pause.'
+                });
+
+                return;
+            }
+
+            // =====================
+            // /skip
+            // =====================
+
+            if (
+                interaction.commandName ===
+                'skip'
+            ) {
+                const ok =
+                    skipMusic();
+
+                await interaction.reply({
+                    content: ok
+                        ? '⏭️ Đã skip.'
+                        : '❌ Không có bài để skip.'
+                });
+
+                return;
+            }
+
+            // =====================
+            // /stop
+            // =====================
+
+            if (
+                interaction.commandName ===
+                'stop'
+            ) {
+                stopMusic();
 
                 await interaction.reply({
                     content:
-                        '❌ Không thể phát test audio.'
+                        '⏹️ Đã dừng nhạc và xoá queue.'
+                });
+
+                return;
+            }
+
+            // =====================
+            // /volume
+            // =====================
+
+            if (
+                interaction.commandName ===
+                'volume'
+            ) {
+                const value =
+                    interaction.options.getInteger(
+                        'percent',
+                        true
+                    );
+
+                setVolume(value);
+
+                await interaction.reply({
+                    content:
+                        `🔊 Volume: **${value}%**`
+                });
+
+                return;
+            }
+
+            // =====================
+            // /queue
+            // =====================
+
+            if (
+                interaction.commandName ===
+                'queue'
+            ) {
+                const status =
+                    getMusicStatus();
+
+                if (
+                    !status.current &&
+                    status.queue.length === 0
+                ) {
+                    await interaction.reply({
+                        content:
+                            '📭 Queue đang trống.'
+                    });
+
+                    return;
+                }
+
+                let message = '';
+
+                if (status.current) {
+                    message +=
+                        `🎵 **Đang phát**\n` +
+                        `${status.current.title}\n\n`;
+                }
+
+                if (
+                    status.queue.length >
+                    0
+                ) {
+                    message +=
+                        '📃 **Queue**\n';
+
+                    status.queue
+                        .slice(0, 10)
+                        .forEach(
+                            (
+                                track,
+                                index
+                            ) => {
+                                message +=
+                                    `${index + 1}. ${track.title}\n`;
+                            }
+                        );
+
+                    if (
+                        status.queue.length >
+                        10
+                    ) {
+                        message +=
+                            `\n... và ${
+                                status.queue
+                                    .length -
+                                10
+                            } bài nữa`;
+                    }
+                }
+
+                message +=
+                    `\n\n🔊 Volume: ${status.volume}%`;
+
+                await interaction.reply({
+                    content: message
+                });
+            }
+        } catch (error) {
+            console.error(
+                '❌ Command Error:',
+                error
+            );
+
+            const message =
+                `❌ Có lỗi: ${error.message}`;
+
+            if (
+                interaction.replied ||
+                interaction.deferred
+            ) {
+                await interaction.followUp({
+                    content: message
+                });
+            } else {
+                await interaction.reply({
+                    content: message
                 });
             }
         }
     }
 );
 
-// ============================
-// PROCESS ERROR LOGGING
-// ============================
+// =============================
+// ERROR LOGGING
+// =============================
 
 process.on(
     'unhandledRejection',
@@ -196,9 +512,9 @@ process.on(
     }
 );
 
-// ============================
+// =============================
 // LOGIN
-// ============================
+// =============================
 
 client.login(
     process.env.DISCORD_TOKEN

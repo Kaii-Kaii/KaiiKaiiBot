@@ -4,35 +4,51 @@ import {
     AudioPlayerStatus,
     NoSubscriberBehavior,
     StreamType,
-    getVoiceConnection
+    getVoiceConnection,
+    entersState,
+    VoiceConnectionStatus
 } from '@discordjs/voice';
 
 import { spawn } from 'node:child_process';
 
-// ============================
-// AUDIO PLAYER
-// ============================
-
 const player = createAudioPlayer({
     behaviors: {
-        noSubscriber: NoSubscriberBehavior.Play
+        noSubscriber: NoSubscriberBehavior.Pause
     }
 });
 
-// ============================
+const queue = [];
+
+let currentTrack = null;
+let currentResource = null;
+let ffmpegProcess = null;
+let activeGuildId = null;
+
+let volume = 1;
+
+// =============================
 // PLAYER EVENTS
-// ============================
+// =============================
 
 player.on(AudioPlayerStatus.Playing, () => {
-    console.log('🎵 Audio đang phát');
+    console.log(
+        `🎵 Đang phát: ${currentTrack?.title ?? 'Unknown'}`
+    );
 });
 
 player.on(AudioPlayerStatus.Paused, () => {
-    console.log('⏸️ Audio đang pause');
+    console.log('⏸️ Music paused');
 });
 
 player.on(AudioPlayerStatus.Idle, () => {
-    console.log('⏹️ Audio đã dừng');
+    console.log('⏹️ Track kết thúc');
+
+    cleanupFFmpeg();
+
+    currentTrack = null;
+    currentResource = null;
+
+    void playNext();
 });
 
 player.on('error', (error) => {
@@ -40,50 +56,121 @@ player.on('error', (error) => {
         '❌ Audio Player Error:',
         error.message
     );
+
+    cleanupFFmpeg();
+
+    currentTrack = null;
+    currentResource = null;
+
+    void playNext();
 });
 
-// ============================
-// ATTACH PLAYER TO VOICE
-// ============================
+// =============================
+// ADD TRACK
+// =============================
 
-export function attachPlayerToVoice(guildId) {
-    const connection = getVoiceConnection(guildId);
+export async function addTrack(
+    guildId,
+    track
+) {
+    activeGuildId = guildId;
 
-    if (!connection) {
-        throw new Error(
-            'Không tìm thấy VoiceConnection.'
-        );
+    queue.push(track);
+
+    console.log(
+        `➕ Queue: ${track.title}`
+    );
+
+    // Nếu đang không phát bài nào
+    if (
+        player.state.status ===
+        AudioPlayerStatus.Idle &&
+        !currentTrack
+    ) {
+        await playNext();
     }
 
-    connection.subscribe(player);
-
-    console.log('🔊 Audio player đã gắn vào voice');
-
-    return player;
+    return {
+        position:
+            currentTrack?.url === track.url
+                ? 0
+                : queue.length,
+        track
+    };
 }
 
-// ============================
-// TEST AUDIO
-// ============================
+// =============================
+// PLAY NEXT
+// =============================
 
-export function playTestTone() {
-    console.log('🧪 Đang tạo test tone bằng FFmpeg...');
+async function playNext() {
+    if (!activeGuildId) {
+        return;
+    }
 
-    const ffmpeg = spawn(
+    if (queue.length === 0) {
+        console.log('📭 Queue trống');
+        return;
+    }
+
+    const connection =
+        getVoiceConnection(activeGuildId);
+
+    if (!connection) {
+        console.error(
+            '❌ Không có VoiceConnection'
+        );
+        return;
+    }
+
+    try {
+        await entersState(
+            connection,
+            VoiceConnectionStatus.Ready,
+            10_000
+        );
+    } catch {
+        console.error(
+            '❌ Voice chưa Ready'
+        );
+        return;
+    }
+
+    const track = queue.shift();
+
+    currentTrack = track;
+
+    cleanupFFmpeg();
+
+    console.log(
+        `🎛️ FFmpeg đang mở: ${track.title}`
+    );
+
+    ffmpegProcess = spawn(
         'ffmpeg',
         [
+            '-nostdin',
             '-hide_banner',
             '-loglevel',
             'error',
 
-            // Tạo tone 440Hz trong 3 giây
-            '-f',
-            'lavfi',
+            // reconnect khi stream HTTP bị ngắt
+            '-reconnect',
+            '1',
+
+            '-reconnect_streamed',
+            '1',
+
+            '-reconnect_delay_max',
+            '5',
 
             '-i',
-            'sine=frequency=440:duration=3',
+            track.url,
 
-            // Output raw PCM
+            // bỏ video nếu URL có cả video
+            '-vn',
+
+            // PCM 48kHz stereo
             '-f',
             's16le',
 
@@ -104,52 +191,156 @@ export function playTestTone() {
         }
     );
 
-    ffmpeg.on('error', (error) => {
-        console.error(
-            '❌ Không chạy được FFmpeg:',
-            error.message
-        );
-    });
-
-    ffmpeg.stderr.on('data', (data) => {
-        const message = data
-            .toString()
-            .trim();
-
-        if (message) {
+    ffmpegProcess.on(
+        'error',
+        (error) => {
             console.error(
-                '❌ FFmpeg:',
-                message
+                '❌ FFmpeg process:',
+                error.message
             );
-        }
-    });
-
-    const resource = createAudioResource(
-        ffmpeg.stdout,
-        {
-            inputType: StreamType.Raw
         }
     );
 
-    player.play(resource);
+    ffmpegProcess.stderr.on(
+        'data',
+        (data) => {
+            const message =
+                data.toString().trim();
+
+            if (message) {
+                console.error(
+                    '❌ FFmpeg:',
+                    message
+                );
+            }
+        }
+    );
+
+    ffmpegProcess.on(
+        'close',
+        (code) => {
+            console.log(
+                `🎛️ FFmpeg exit: ${code}`
+            );
+        }
+    );
+
+    currentResource =
+        createAudioResource(
+            ffmpegProcess.stdout,
+            {
+                inputType:
+                    StreamType.Raw,
+
+                inlineVolume: true,
+
+                metadata: track
+            }
+        );
+
+    currentResource.volume.setVolume(
+        volume
+    );
+
+    connection.subscribe(player);
+
+    player.play(currentResource);
 }
 
-// ============================
-// CONTROLS
-// ============================
+// =============================
+// PAUSE
+// =============================
 
 export function pauseMusic() {
     return player.pause();
 }
 
+// =============================
+// RESUME
+// =============================
+
 export function resumeMusic() {
     return player.unpause();
 }
 
+// =============================
+// SKIP
+// =============================
+
+export function skipMusic() {
+    if (!currentTrack) {
+        return false;
+    }
+
+    player.stop(true);
+
+    return true;
+}
+
+// =============================
+// STOP
+// =============================
+
 export function stopMusic() {
+    queue.length = 0;
+
+    currentTrack = null;
+
+    cleanupFFmpeg();
+
     player.stop(true);
 }
 
-export function getPlayer() {
-    return player;
+// =============================
+// VOLUME
+// =============================
+
+export function setVolume(percent) {
+    volume = percent / 100;
+
+    if (currentResource?.volume) {
+        currentResource.volume.setVolume(
+            volume
+        );
+    }
+
+    return percent;
+}
+
+// =============================
+// QUEUE INFO
+// =============================
+
+export function getMusicStatus() {
+    return {
+        current: currentTrack,
+
+        queue: [...queue],
+
+        volume:
+            Math.round(volume * 100),
+
+        status:
+            player.state.status
+    };
+}
+
+// =============================
+// CLEANUP
+// =============================
+
+function cleanupFFmpeg() {
+    if (!ffmpegProcess) {
+        return;
+    }
+
+    try {
+        ffmpegProcess.kill(
+            'SIGKILL'
+        );
+    } catch {
+        // ignore
+    }
+
+    ffmpegProcess = null;
 }
