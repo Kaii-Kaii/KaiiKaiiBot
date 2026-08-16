@@ -1,93 +1,109 @@
 import {
     joinVoiceChannel,
-    entersState,
-    VoiceConnectionStatus,
-    getVoiceConnection
+    getVoiceConnection,
+    VoiceConnectionStatus
 } from '@discordjs/voice';
 
 let reconnectTimer = null;
-let isConnecting = false;
+const monitoredConnections = new WeakSet();
 
 export async function connectToVoice(client) {
-    if (isConnecting) return;
+    const guild = await client.guilds.fetch(process.env.GUILD_ID);
 
-    isConnecting = true;
+    const channel = await guild.channels.fetch(
+        process.env.VOICE_CHANNEL_ID
+    );
 
-    try {
-        const guild = await client.guilds.fetch(process.env.GUILD_ID);
-        const channel = await guild.channels.fetch(
-            process.env.VOICE_CHANNEL_ID
+    if (!channel || !channel.isVoiceBased()) {
+        throw new Error(
+            'VOICE_CHANNEL_ID không hợp lệ hoặc không phải phòng voice.'
         );
+    }
 
-        if (!channel || !channel.isVoiceBased()) {
-            throw new Error(
-                'VOICE_CHANNEL_ID không hợp lệ hoặc không phải phòng voice.'
-            );
-        }
+    let connection = getVoiceConnection(guild.id);
 
-        // Nếu bot đang có connection và đã ở đúng phòng
-        // thì không cần tạo lại.
-        const existingConnection = getVoiceConnection(guild.id);
-
-        if (
-            existingConnection &&
-            existingConnection.state.status !==
-            VoiceConnectionStatus.Destroyed
-        ) {
-            existingConnection.rejoin({
-                channelId: channel.id,
-                selfDeaf: true,
-                selfMute: false
-            });
-
-            await entersState(
-                existingConnection,
-                VoiceConnectionStatus.Ready,
-                20_000
-            );
-
-            console.log(`🎧 Đã kết nối lại voice: ${channel.name}`);
-            return existingConnection;
-        }
-
-        const connection = joinVoiceChannel({
+    // Nếu đã có connection thì chỉ yêu cầu nó vào lại.
+    // KHÔNG destroy rồi tạo lại liên tục.
+    if (
+        connection &&
+        connection.state.status !== VoiceConnectionStatus.Destroyed
+    ) {
+        connection.rejoin({
             channelId: channel.id,
-            guildId: guild.id,
-            adapterCreator: guild.voiceAdapterCreator,
             selfDeaf: true,
             selfMute: false
         });
 
-        await entersState(
-            connection,
-            VoiceConnectionStatus.Ready,
-            20_000
-        );
+        console.log(`🔄 Đang yêu cầu vào lại: ${channel.name}`);
 
-        console.log(`🎧 Đã kết nối voice: ${channel.name}`);
+        setupConnectionEvents(connection);
 
         return connection;
-    } catch (error) {
-        console.error(
-            '❌ Kết nối voice thất bại:',
-            error.message
-        );
-
-        scheduleReconnect(client);
-    } finally {
-        isConnecting = false;
     }
+
+    connection = joinVoiceChannel({
+        channelId: channel.id,
+        guildId: guild.id,
+        adapterCreator: guild.voiceAdapterCreator,
+        selfDeaf: true,
+        selfMute: false
+    });
+
+    setupConnectionEvents(connection);
+
+    console.log(`🎧 Đã yêu cầu vào voice: ${channel.name}`);
+
+    return connection;
 }
 
-export function scheduleReconnect(client) {
-    if (reconnectTimer) {
+function setupConnectionEvents(connection) {
+    // Không gắn listener trùng mỗi lần reconnect
+    if (monitoredConnections.has(connection)) {
         return;
     }
 
-    console.log('⏳ Thử vào lại voice sau 5 giây...');
+    monitoredConnections.add(connection);
+
+    connection.on(VoiceConnectionStatus.Signalling, () => {
+        console.log('🟡 Voice: Signalling');
+    });
+
+    connection.on(VoiceConnectionStatus.Connecting, () => {
+        console.log('🟠 Voice: Connecting');
+    });
+
+    connection.on(VoiceConnectionStatus.Ready, () => {
+        console.log('🟢 Voice: Ready — kết nối hoàn chỉnh');
+    });
+
+    connection.on(VoiceConnectionStatus.Disconnected, () => {
+        console.log('🔴 Voice: Disconnected');
+    });
+
+    connection.on(VoiceConnectionStatus.Destroyed, () => {
+        console.log('⚫ Voice: Destroyed');
+    });
+
+    connection.on('error', (error) => {
+        console.error('❌ Voice networking error:', error.message);
+    });
+}
+
+export function scheduleReconnect(client) {
+    if (reconnectTimer) return;
+
+    console.log('⏳ Thử vào lại sau 5 giây...');
 
     reconnectTimer = setTimeout(async () => {
         reconnectTimer = null;
-        await connectToVoice(client);
+
+        try {
+            await connectToVoice(client);
+        } catch (error) {
+            console.error(
+                '❌ Không thể yêu cầu reconnect:',
+                error.message
+            );
+        }
     }, 5000);
 }
