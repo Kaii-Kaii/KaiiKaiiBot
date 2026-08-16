@@ -22,8 +22,7 @@ export async function connectToVoice(client) {
 
     let connection = getVoiceConnection(guild.id);
 
-    // Nếu đã có connection thì chỉ yêu cầu nó vào lại.
-    // KHÔNG destroy rồi tạo lại liên tục.
+    // Đã có connection thì yêu cầu nó vào lại đúng phòng
     if (
         connection &&
         connection.state.status !== VoiceConnectionStatus.Destroyed
@@ -34,9 +33,9 @@ export async function connectToVoice(client) {
             selfMute: false
         });
 
-        console.log(`🔄 Đang yêu cầu vào lại: ${channel.name}`);
-
         setupConnectionEvents(connection);
+
+        console.log(`🔄 Đang kết nối lại voice: ${channel.name}`);
 
         return connection;
     }
@@ -57,7 +56,7 @@ export async function connectToVoice(client) {
 }
 
 function setupConnectionEvents(connection) {
-    // Không gắn listener trùng mỗi lần reconnect
+    // Không gắn listener trùng
     if (monitoredConnections.has(connection)) {
         return;
     }
@@ -73,7 +72,7 @@ function setupConnectionEvents(connection) {
     });
 
     connection.on(VoiceConnectionStatus.Ready, () => {
-        console.log('🟢 Voice: Ready — kết nối hoàn chỉnh');
+        console.log('🟢 Voice: Ready');
     });
 
     connection.on(VoiceConnectionStatus.Disconnected, () => {
@@ -85,14 +84,19 @@ function setupConnectionEvents(connection) {
     });
 
     connection.on('error', (error) => {
-        console.error('❌ Voice networking error:', error.message);
+        console.error(
+            '❌ Voice networking error:',
+            error.message
+        );
     });
 }
 
 export function scheduleReconnect(client) {
-    if (reconnectTimer) return;
+    if (reconnectTimer) {
+        return;
+    }
 
-    console.log('⏳ Thử vào lại sau 5 giây...');
+    console.log('⏳ Thử vào lại voice sau 5 giây...');
 
     reconnectTimer = setTimeout(async () => {
         reconnectTimer = null;
@@ -101,7 +105,7 @@ export function scheduleReconnect(client) {
             await connectToVoice(client);
         } catch (error) {
             console.error(
-                '❌ Không thể yêu cầu reconnect:',
+                '❌ Reconnect voice thất bại:',
                 error.message
             );
         }
