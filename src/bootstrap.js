@@ -13,7 +13,7 @@ let shuttingDown = false;
 
 function waitForLavalink(timeout = 120000) {
     return new Promise((resolve, reject) => {
-        const started = Date.now();
+        const startedAt = Date.now();
 
         function check() {
             const socket = net.createConnection({
@@ -23,14 +23,13 @@ function waitForLavalink(timeout = 120000) {
 
             socket.once('connect', () => {
                 socket.destroy();
-
                 resolve();
             });
 
             socket.once('error', () => {
                 socket.destroy();
 
-                if (Date.now() - started >= timeout) {
+                if (Date.now() - startedAt >= timeout) {
                     reject(
                         new Error(
                             'Lavalink khởi động quá 120 giây.'
@@ -49,13 +48,13 @@ function waitForLavalink(timeout = 120000) {
 }
 
 // =====================================
-// KHỞI ĐỘNG
+// START
 // =====================================
 
 async function start() {
     console.log('☕ Đang khởi động Lavalink...');
 
-    const lavalinkDir = path.join(
+    const lavalinkDirectory = path.join(
         process.cwd(),
         'lavalink'
     );
@@ -69,8 +68,7 @@ async function start() {
             'Lavalink.jar'
         ],
         {
-            cwd: lavalinkDir,
-
+            cwd: lavalinkDirectory,
             env: process.env,
 
             stdio: [
@@ -81,9 +79,9 @@ async function start() {
         }
     );
 
-    // =====================================
-    // LAVALINK LOG
-    // =====================================
+    // ===============================
+    // STDOUT
+    // ===============================
 
     lavalinkProcess.stdout.on(
         'data',
@@ -99,6 +97,10 @@ async function start() {
         }
     );
 
+    // ===============================
+    // STDERR
+    // ===============================
+
     lavalinkProcess.stderr.on(
         'data',
         (data) => {
@@ -113,6 +115,10 @@ async function start() {
         }
     );
 
+    // ===============================
+    // PROCESS ERROR
+    // ===============================
+
     lavalinkProcess.on(
         'error',
         (error) => {
@@ -123,6 +129,10 @@ async function start() {
         }
     );
 
+    // ===============================
+    // LAVALINK EXIT
+    // ===============================
+
     lavalinkProcess.on(
         'exit',
         (code) => {
@@ -130,7 +140,11 @@ async function start() {
                 `⚠️ Lavalink đã thoát với code ${code}`
             );
 
-            // Lavalink tự chết thì cho cả app restart
+            /*
+             * Nếu Lavalink tự chết thì kill luôn
+             * Node process để Discloud restart
+             * cả stack.
+             */
             if (!shuttingDown) {
                 process.exit(1);
             }
@@ -138,7 +152,7 @@ async function start() {
     );
 
     // =====================================
-    // CHỜ LAVALINK READY
+    // CHỜ SERVER READY
     // =====================================
 
     await waitForLavalink();
@@ -147,9 +161,16 @@ async function start() {
         '🌋 Lavalink đã mở port 2333!'
     );
 
+    /*
+     * Cho Lavalink ổn định thêm một tí
+     * trước khi Shoukaku connect.
+     */
+    await new Promise(
+        resolve => setTimeout(resolve, 1500)
+    );
+
     // =====================================
-    // SAU KHI LAVALINK SỐNG
-    // MỚI KHỞI ĐỘNG DISCORD BOT
+    // START DISCORD BOT
     // =====================================
 
     console.log(
@@ -187,9 +208,10 @@ function shutdown() {
         }
     }
 
-    setTimeout(() => {
-        process.exit(0);
-    }, 1500);
+    setTimeout(
+        () => process.exit(0),
+        1500
+    );
 }
 
 process.on(
@@ -203,7 +225,7 @@ process.on(
 );
 
 // =====================================
-// START
+// BOOT
 // =====================================
 
 start().catch(

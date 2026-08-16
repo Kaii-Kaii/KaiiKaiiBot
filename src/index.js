@@ -3,27 +3,64 @@ import 'dotenv/config';
 import {
     Client,
     Events,
-    GatewayIntentBits
+    GatewayIntentBits,
+    ApplicationCommandOptionType
 } from 'discord.js';
 
 import {
-    connectToVoice,
-    scheduleReconnect
-} from './voice/voiceManager.js';
+    Connectors
+} from 'shoukaku';
 
 import {
-    addTrack,
-    pauseMusic,
-    resumeMusic,
-    skipMusic,
-    stopMusic,
-    setVolume,
-    getMusicStatus
-} from './music/playerManager.js';
+    Kazagumo
+} from 'kazagumo';
 
-// =============================
-// CLIENT
-// =============================
+// =====================================
+// ENV
+// =====================================
+
+const DISCORD_TOKEN =
+    process.env.DISCORD_TOKEN;
+
+const GUILD_ID =
+    process.env.GUILD_ID;
+
+const VOICE_CHANNEL_ID =
+    process.env.VOICE_CHANNEL_ID;
+
+const MUSIC_TEXT_CHANNEL_ID =
+    process.env.MUSIC_TEXT_CHANNEL_ID ||
+    VOICE_CHANNEL_ID;
+
+const LAVALINK_PASSWORD =
+    process.env.LAVALINK_PASSWORD ||
+    'kaiikaii-local';
+
+// =====================================
+// KIỂM TRA ENV
+// =====================================
+
+if (!DISCORD_TOKEN) {
+    throw new Error(
+        'Thiếu DISCORD_TOKEN.'
+    );
+}
+
+if (!GUILD_ID) {
+    throw new Error(
+        'Thiếu GUILD_ID.'
+    );
+}
+
+if (!VOICE_CHANNEL_ID) {
+    throw new Error(
+        'Thiếu VOICE_CHANNEL_ID.'
+    );
+}
+
+// =====================================
+// DISCORD CLIENT
+// =====================================
 
 const client = new Client({
     intents: [
@@ -32,406 +69,724 @@ const client = new Client({
     ]
 });
 
-// =============================
-// READY
-// =============================
+// =====================================
+// LAVALINK NODES
+// =====================================
 
-client.once(
-    Events.ClientReady,
-    async (readyClient) => {
-        console.log(
-            `✅ Bot đã online: ${readyClient.user.tag}`
-        );
+const nodes = [
+    {
+        name: 'KaiiKaii-Local',
 
-        try {
-            await connectToVoice(
-                readyClient
-            );
+        url: '127.0.0.1:2333',
 
+        auth: LAVALINK_PASSWORD,
+
+        secure: false
+    }
+];
+
+// Shoukaku node config dùng `url`, `auth`, `secure` theo API hiện tại.
+
+// =====================================
+// KAZAGUMO
+// =====================================
+
+const kazagumo = new Kazagumo(
+    {
+        /*
+         * Khi user nhập text bình thường:
+         *
+         * /play faded alan walker
+         *
+         * Kazagumo sẽ dùng YouTube search.
+         */
+        defaultSearchEngine: 'youtube',
+
+        /*
+         * Cực kỳ quan trọng:
+         * gửi voice payload từ Lavalink connector
+         * về Discord gateway.
+         */
+        send: (
+            guildId,
+            payload
+        ) => {
             const guild =
-                await readyClient.guilds.fetch(
-                    process.env.GUILD_ID
+                client.guilds.cache.get(
+                    guildId
                 );
 
-            // Slash commands riêng server
-            await guild.commands.set([
-                {
-                    name: 'play',
-                    description:
-                        'Phát hoặc thêm nhạc vào hàng đợi',
+            if (guild) {
+                guild.shard.send(
+                    payload
+                );
+            }
+        }
+    },
 
-                    options: [
-                        {
-                            name: 'url',
-                            description:
-                                'Direct URL tới file/stream audio',
-                            type: 3,
-                            required: true
-                        },
+    new Connectors.DiscordJS(
+        client
+    ),
 
-                        {
-                            name: 'name',
-                            description:
-                                'Tên bài hát',
-                            type: 3,
-                            required: false
-                        }
-                    ]
-                },
+    nodes
+);
 
-                {
-                    name: 'pause',
-                    description:
-                        'Tạm dừng nhạc'
-                },
+// =====================================
+// STATE
+// =====================================
 
-                {
-                    name: 'resume',
-                    description:
-                        'Tiếp tục phát nhạc'
-                },
+let discordReady = false;
+let lavalinkReady = false;
 
-                {
-                    name: 'skip',
-                    description:
-                        'Bỏ qua bài hiện tại'
-                },
+// =====================================
+// TẠO / GIỮ PLAYER 24/7
+// =====================================
 
-                {
-                    name: 'stop',
-                    description:
-                        'Dừng nhạc và xoá queue'
-                },
+async function ensurePlayer(
+    textChannelId = MUSIC_TEXT_CHANNEL_ID
+) {
+    if (
+        !discordReady ||
+        !lavalinkReady
+    ) {
+        return null;
+    }
 
-                {
-                    name: 'queue',
-                    description:
-                        'Xem hàng đợi nhạc'
-                },
+    let player =
+        kazagumo.players.get(
+            GUILD_ID
+        );
 
-                {
-                    name: 'volume',
-                    description:
-                        'Chỉnh âm lượng',
+    // Nếu đã tồn tại thì dùng lại
+    if (player) {
+        return player;
+    }
 
-                    options: [
-                        {
-                            name: 'percent',
-                            description:
-                                'Âm lượng từ 0 đến 150',
-                            type: 4,
-                            required: true,
+    console.log(
+        '🎧 Đang tạo music player...'
+    );
 
-                            min_value: 0,
-                            max_value: 150
-                        }
-                    ]
-                }
-            ]);
+    player =
+        await kazagumo.createPlayer({
+            guildId: GUILD_ID,
 
-            console.log(
-                '🎵 Music commands đã sẵn sàng'
-            );
+            textId:
+                textChannelId,
+
+            voiceId:
+                VOICE_CHANNEL_ID,
+
+            volume: 80
+        });
+
+    console.log(
+        '🌊 KaiiKaii đã vào voice'
+    );
+
+    return player;
+}
+
+// =====================================
+// LAVALINK EVENTS
+// =====================================
+
+kazagumo.shoukaku.on(
+    'ready',
+    async (name) => {
+        console.log(
+            `🌋 Lavalink Ready: ${name}`
+        );
+
+        lavalinkReady = true;
+
+        try {
+            await ensurePlayer();
         } catch (error) {
             console.error(
-                '❌ Khởi động bot thất bại:',
+                '❌ Không tạo được player:',
                 error
             );
         }
     }
 );
 
-// =============================
-// VOICE RECONNECT
-// =============================
-
-client.on(
-    Events.VoiceStateUpdate,
-    (oldState, newState) => {
-        if (
-            !client.user ||
-            newState.id !==
-                client.user.id
-        ) {
-            return;
-        }
-
-        if (
-            newState.guild.id !==
-            process.env.GUILD_ID
-        ) {
-            return;
-        }
-
-        const target =
-            process.env.VOICE_CHANNEL_ID;
-
-        // đang ở đúng phòng
-        if (
-            newState.channelId ===
-            target
-        ) {
-            return;
-        }
-
-        if (!newState.channelId) {
-            console.log(
-                '😵 Bot bị disconnect khỏi voice'
-            );
-        } else {
-            console.log(
-                '👀 Bot bị kéo sang room khác'
-            );
-        }
-
-        scheduleReconnect(client);
+kazagumo.shoukaku.on(
+    'error',
+    (
+        name,
+        error
+    ) => {
+        console.error(
+            `❌ Lavalink ${name}:`,
+            error
+        );
     }
 );
 
-// =============================
-// COMMANDS
-// =============================
+kazagumo.shoukaku.on(
+    'close',
+    (
+        name,
+        code,
+        reason
+    ) => {
+        console.warn(
+            `⚠️ Lavalink ${name} đóng:`,
+            code,
+            reason || ''
+        );
+    }
+);
+
+kazagumo.shoukaku.on(
+    'disconnect',
+    (
+        name,
+        count
+    ) => {
+        console.warn(
+            `🔌 Lavalink ${name} disconnect. Players: ${count}`
+        );
+
+        lavalinkReady = false;
+    }
+);
+
+// =====================================
+// KAZAGUMO MUSIC EVENTS
+// =====================================
+
+kazagumo.on(
+    'playerStart',
+    (
+        player,
+        track
+    ) => {
+        player.data.set(
+            'currentTrack',
+            track
+        );
+
+        console.log(
+            `🎵 Đang phát: ${track.title} — ${track.author}`
+        );
+    }
+);
+
+kazagumo.on(
+    'playerEnd',
+    (
+        player,
+        track
+    ) => {
+        console.log(
+            `✅ Kết thúc: ${track?.title || 'Unknown'}`
+        );
+
+        player.data.set(
+            'currentTrack',
+            null
+        );
+    }
+);
+
+kazagumo.on(
+    'playerEmpty',
+    (
+        player
+    ) => {
+        /*
+         * KHÔNG destroy player.
+         *
+         * Khác sample Kazagumo mặc định:
+         * bot của mình phải ở voice 24/7.
+         */
+
+        player.data.set(
+            'currentTrack',
+            null
+        );
+
+        console.log(
+            '📭 Queue trống — KaiiKaii vẫn ở voice.'
+        );
+    }
+);
+
+// =====================================
+// DISCORD READY
+// =====================================
+
+client.once(
+    Events.ClientReady,
+    async (
+        readyClient
+    ) => {
+        console.log(
+            `✅ Bot online: ${readyClient.user.tag}`
+        );
+
+        discordReady = true;
+
+        const guild =
+            await readyClient.guilds.fetch(
+                GUILD_ID
+            );
+
+        // =================================
+        // REGISTER SLASH COMMANDS
+        // =================================
+
+        await guild.commands.set([
+            {
+                name: 'play',
+
+                description:
+                    'Phát nhạc bằng tên bài, YouTube hoặc Spotify',
+
+                options: [
+                    {
+                        name: 'query',
+
+                        description:
+                            'Tên bài hát hoặc link',
+
+                        type:
+                            ApplicationCommandOptionType.String,
+
+                        required: true
+                    }
+                ]
+            },
+
+            {
+                name: 'pause',
+
+                description:
+                    'Tạm dừng bài đang phát'
+            },
+
+            {
+                name: 'resume',
+
+                description:
+                    'Tiếp tục bài đang pause'
+            },
+
+            {
+                name: 'skip',
+
+                description:
+                    'Bỏ qua bài hiện tại'
+            },
+
+            {
+                name: 'stop',
+
+                description:
+                    'Dừng nhạc và xoá toàn bộ queue'
+            },
+
+            {
+                name: 'queue',
+
+                description:
+                    'Xem hàng đợi nhạc'
+            },
+
+            {
+                name: 'volume',
+
+                description:
+                    'Chỉnh âm lượng',
+
+                options: [
+                    {
+                        name: 'percent',
+
+                        description:
+                            'Âm lượng từ 0 đến 150',
+
+                        type:
+                            ApplicationCommandOptionType.Integer,
+
+                        required: true,
+
+                        min_value: 0,
+                        max_value: 150
+                    }
+                ]
+            }
+        ]);
+
+        console.log(
+            '🎛️ Slash commands đã sẵn sàng'
+        );
+
+        /*
+         * Nếu Lavalink Ready trước Discord
+         * thì đoạn này sẽ tạo player.
+         */
+        try {
+            await ensurePlayer();
+        } catch (error) {
+            console.error(
+                '❌ Auto join voice lỗi:',
+                error
+            );
+        }
+    }
+);
+
+// =====================================
+// INTERACTION HANDLER
+// =====================================
 
 client.on(
     Events.InteractionCreate,
-    async (interaction) => {
+    async (
+        interaction
+    ) => {
         if (
             !interaction.isChatInputCommand()
         ) {
             return;
         }
 
+        if (
+            interaction.guildId !==
+            GUILD_ID
+        ) {
+            return;
+        }
+
         try {
-            // =====================
+
+            // =================================
             // /play
-            // =====================
+            // =================================
 
             if (
                 interaction.commandName ===
                 'play'
             ) {
-                const url =
+                await interaction.deferReply();
+
+                const query =
                     interaction.options.getString(
-                        'url',
+                        'query',
                         true
                     );
 
-                const customName =
-                    interaction.options.getString(
-                        'name'
+                const player =
+                    await ensurePlayer(
+                        interaction.channelId
                     );
 
-                // URL validation
-                let parsed;
-
-                try {
-                    parsed =
-                        new URL(url);
-                } catch {
-                    await interaction.reply({
-                        content:
-                            '❌ URL không hợp lệ.'
-                    });
+                if (!player) {
+                    await interaction.editReply(
+                        '❌ Lavalink chưa sẵn sàng.'
+                    );
 
                     return;
                 }
 
-                if (
-                    ![
-                        'http:',
-                        'https:'
-                    ].includes(
-                        parsed.protocol
-                    )
-                ) {
-                    await interaction.reply({
-                        content:
-                            '❌ Chỉ hỗ trợ HTTP/HTTPS.'
-                    });
+                console.log(
+                    `🔎 Tìm: ${query}`
+                );
 
-                    return;
-                }
-
-                const title =
-                    customName ||
-                    decodeURIComponent(
-                        parsed.pathname
-                            .split('/')
-                            .pop()
-                    ) ||
-                    'Unknown Track';
-
+                /*
+                 * Nếu query là:
+                 *
+                 * "faded alan walker"
+                 * -> YouTube search
+                 *
+                 * youtube.com/... / youtu.be/...
+                 * -> YouTube source plugin
+                 *
+                 * open.spotify.com/...
+                 * -> LavaSrc Spotify
+                 */
                 const result =
-                    await addTrack(
-                        interaction.guildId,
+                    await kazagumo.search(
+                        query,
                         {
-                            title,
-                            url,
-
-                            requestedBy:
+                            requester:
                                 interaction.user
-                                    .username
                         }
                     );
 
                 if (
-                    result.position === 0
+                    !result.tracks ||
+                    result.tracks.length === 0
                 ) {
-                    await interaction.reply({
-                        content:
-                            `▶️ Đang phát **${title}**`
-                    });
-                } else {
-                    await interaction.reply({
-                        content:
-                            `➕ Đã thêm **${title}** vào queue`
-                    });
+                    await interaction.editReply(
+                        '❌ Không tìm thấy bài nào.'
+                    );
+
+                    return;
                 }
+
+                // =============================
+                // PLAYLIST
+                // =============================
+
+                if (
+                    result.type ===
+                    'PLAYLIST'
+                ) {
+                    player.queue.add(
+                        result.tracks
+                    );
+
+                    if (
+                        !player.playing &&
+                        !player.paused
+                    ) {
+                        player.play();
+                    }
+
+                    await interaction.editReply(
+                        `📚 Đã thêm **${result.tracks.length} bài** vào queue.`
+                    );
+
+                    return;
+                }
+
+                // =============================
+                // SINGLE TRACK
+                // =============================
+
+                const track =
+                    result.tracks[0];
+
+                player.queue.add(
+                    track
+                );
+
+                if (
+                    !player.playing &&
+                    !player.paused
+                ) {
+                    player.play();
+                }
+
+                await interaction.editReply(
+                    `🎵 Đã thêm **${track.title}** — **${track.author}**`
+                );
 
                 return;
             }
 
-            // =====================
+            // =================================
+            // PLAYER
+            // =================================
+
+            const player =
+                kazagumo.players.get(
+                    interaction.guildId
+                );
+
+            if (!player) {
+                await interaction.reply(
+                    '❌ Music player chưa sẵn sàng.'
+                );
+
+                return;
+            }
+
+            // =================================
             // /pause
-            // =====================
+            // =================================
 
             if (
                 interaction.commandName ===
                 'pause'
             ) {
-                const ok =
-                    pauseMusic();
+                if (!player.playing) {
+                    await interaction.reply(
+                        '❌ Hiện không có bài đang phát.'
+                    );
 
-                await interaction.reply({
-                    content: ok
-                        ? '⏸️ Đã pause.'
-                        : '❌ Không có nhạc đang phát.'
-                });
+                    return;
+                }
+
+                await player.pause(
+                    true
+                );
+
+                await interaction.reply(
+                    '⏸️ Đã pause.'
+                );
 
                 return;
             }
 
-            // =====================
+            // =================================
             // /resume
-            // =====================
+            // =================================
 
             if (
                 interaction.commandName ===
                 'resume'
             ) {
-                const ok =
-                    resumeMusic();
+                if (!player.paused) {
+                    await interaction.reply(
+                        '❌ Nhạc hiện không bị pause.'
+                    );
 
-                await interaction.reply({
-                    content: ok
-                        ? '▶️ Tiếp tục phát.'
-                        : '❌ Không có nhạc đang pause.'
-                });
+                    return;
+                }
+
+                await player.pause(
+                    false
+                );
+
+                await interaction.reply(
+                    '▶️ Tiếp tục phát.'
+                );
 
                 return;
             }
 
-            // =====================
+            // =================================
             // /skip
-            // =====================
+            // =================================
 
             if (
                 interaction.commandName ===
                 'skip'
             ) {
-                const ok =
-                    skipMusic();
+                if (
+                    !player.playing &&
+                    !player.paused
+                ) {
+                    await interaction.reply(
+                        '❌ Không có bài để skip.'
+                    );
 
-                await interaction.reply({
-                    content: ok
-                        ? '⏭️ Đã skip.'
-                        : '❌ Không có bài để skip.'
-                });
+                    return;
+                }
+
+                await player.skip();
+
+                await interaction.reply(
+                    '⏭️ Đã skip.'
+                );
 
                 return;
             }
 
-            // =====================
+            // =================================
             // /stop
-            // =====================
+            // =================================
 
             if (
                 interaction.commandName ===
                 'stop'
             ) {
-                stopMusic();
+                /*
+                 * Xoá queue
+                 */
+                while (
+                    player.queue.length > 0
+                ) {
+                    player.queue.shift();
+                }
 
-                await interaction.reply({
-                    content:
-                        '⏹️ Đã dừng nhạc và xoá queue.'
-                });
+                /*
+                 * Stop track hiện tại trực tiếp
+                 * ở Shoukaku.
+                 *
+                 * KHÔNG destroy player
+                 * -> bot vẫn ở voice.
+                 */
+                try {
+                    await player.shoukaku.stopTrack();
+                } catch {
+                    // Không có track cũng không sao
+                }
+
+                player.data.set(
+                    'currentTrack',
+                    null
+                );
+
+                await interaction.reply(
+                    '⏹️ Đã dừng nhạc và xoá queue. KaiiKaii vẫn ở voice.'
+                );
 
                 return;
             }
 
-            // =====================
+            // =================================
             // /volume
-            // =====================
+            // =================================
 
             if (
                 interaction.commandName ===
                 'volume'
             ) {
-                const value =
+                const percent =
                     interaction.options.getInteger(
                         'percent',
                         true
                     );
 
-                setVolume(value);
+                await player.setVolume(
+                    percent
+                );
 
-                await interaction.reply({
-                    content:
-                        `🔊 Volume: **${value}%**`
-                });
+                await interaction.reply(
+                    `🔊 Volume: **${percent}%**`
+                );
 
                 return;
             }
 
-            // =====================
+            // =================================
             // /queue
-            // =====================
+            // =================================
 
             if (
                 interaction.commandName ===
                 'queue'
             ) {
-                const status =
-                    getMusicStatus();
+                const current =
+                    player.data.get(
+                        'currentTrack'
+                    );
 
                 if (
-                    !status.current &&
-                    status.queue.length === 0
+                    !current &&
+                    player.queue.length === 0
                 ) {
-                    await interaction.reply({
-                        content:
-                            '📭 Queue đang trống.'
-                    });
+                    await interaction.reply(
+                        '📭 Queue đang trống.'
+                    );
 
                     return;
                 }
 
                 let message = '';
 
-                if (status.current) {
+                // Current
+                if (current) {
                     message +=
-                        `🎵 **Đang phát**\n` +
-                        `${status.current.title}\n\n`;
+                        '🎵 **Đang phát**\n';
+
+                    message +=
+                        `**${current.title}** — ${current.author}\n\n`;
                 }
 
+                // Queue
                 if (
-                    status.queue.length >
-                    0
+                    player.queue.length > 0
                 ) {
                     message +=
-                        '📃 **Queue**\n';
+                        '📃 **Tiếp theo**\n';
 
-                    status.queue
+                    player.queue
                         .slice(0, 10)
                         .forEach(
                             (
@@ -439,64 +794,67 @@ client.on(
                                 index
                             ) => {
                                 message +=
-                                    `${index + 1}. ${track.title}\n`;
+                                    `${index + 1}. ${track.title} — ${track.author}\n`;
                             }
                         );
 
                     if (
-                        status.queue.length >
+                        player.queue.length >
                         10
                     ) {
                         message +=
-                            `\n... và ${
-                                status.queue
-                                    .length -
-                                10
-                            } bài nữa`;
+                            `\n... và **${player.queue.length - 10}** bài nữa`;
                     }
                 }
 
-                message +=
-                    `\n\n🔊 Volume: ${status.volume}%`;
+                await interaction.reply(
+                    message
+                );
 
-                await interaction.reply({
-                    content: message
-                });
+                return;
             }
+
         } catch (error) {
             console.error(
-                '❌ Command Error:',
+                '❌ Command error:',
                 error
             );
 
             const message =
-                `❌ Có lỗi: ${error.message}`;
+                `❌ Lỗi: ${error?.message ||
+                'Không xác định'
+                }`;
 
             if (
-                interaction.replied ||
                 interaction.deferred
             ) {
-                await interaction.followUp({
-                    content: message
-                });
+                await interaction.editReply(
+                    message
+                );
+            } else if (
+                interaction.replied
+            ) {
+                await interaction.followUp(
+                    message
+                );
             } else {
-                await interaction.reply({
-                    content: message
-                });
+                await interaction.reply(
+                    message
+                );
             }
         }
     }
 );
 
-// =============================
-// ERROR LOGGING
-// =============================
+// =====================================
+// GLOBAL ERRORS
+// =====================================
 
 process.on(
     'unhandledRejection',
     (error) => {
         console.error(
-            '❌ Unhandled Rejection:',
+            '❌ Unhandled rejection:',
             error
         );
     }
@@ -506,16 +864,16 @@ process.on(
     'uncaughtException',
     (error) => {
         console.error(
-            '❌ Uncaught Exception:',
+            '❌ Uncaught exception:',
             error
         );
     }
 );
 
-// =============================
+// =====================================
 // LOGIN
-// =============================
+// =====================================
 
 client.login(
-    process.env.DISCORD_TOKEN
+    DISCORD_TOKEN
 );
