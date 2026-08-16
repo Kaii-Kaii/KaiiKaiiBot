@@ -7,6 +7,10 @@ const PORT = 2333;
 let lavalinkProcess = null;
 let shuttingDown = false;
 
+// =====================================
+// CHỜ LAVALINK MỞ PORT
+// =====================================
+
 function waitForLavalink(timeout = 120000) {
     return new Promise((resolve, reject) => {
         const started = Date.now();
@@ -19,6 +23,7 @@ function waitForLavalink(timeout = 120000) {
 
             socket.once('connect', () => {
                 socket.destroy();
+
                 resolve();
             });
 
@@ -43,6 +48,10 @@ function waitForLavalink(timeout = 120000) {
     });
 }
 
+// =====================================
+// KHỞI ĐỘNG
+// =====================================
+
 async function start() {
     console.log('☕ Đang khởi động Lavalink...');
 
@@ -61,7 +70,9 @@ async function start() {
         ],
         {
             cwd: lavalinkDir,
+
             env: process.env,
+
             stdio: [
                 'ignore',
                 'pipe',
@@ -70,38 +81,65 @@ async function start() {
         }
     );
 
-    lavalinkProcess.stdout.on('data', (data) => {
-        const message = data.toString().trim();
+    // =====================================
+    // LAVALINK LOG
+    // =====================================
 
-        if (message) {
-            console.log(`[Lavalink] ${message}`);
+    lavalinkProcess.stdout.on(
+        'data',
+        (data) => {
+            const message =
+                data.toString().trim();
+
+            if (message) {
+                console.log(
+                    `[Lavalink] ${message}`
+                );
+            }
         }
-    });
+    );
 
-    lavalinkProcess.stderr.on('data', (data) => {
-        const message = data.toString().trim();
+    lavalinkProcess.stderr.on(
+        'data',
+        (data) => {
+            const message =
+                data.toString().trim();
 
-        if (message) {
-            console.error(`[Lavalink] ${message}`);
+            if (message) {
+                console.error(
+                    `[Lavalink] ${message}`
+                );
+            }
         }
-    });
+    );
 
-    lavalinkProcess.on('error', (error) => {
-        console.error(
-            '❌ Không chạy được Lavalink:',
-            error
-        );
-    });
-
-    lavalinkProcess.on('exit', (code) => {
-        console.log(
-            `⚠️ Lavalink đã thoát với code ${code}`
-        );
-
-        if (!shuttingDown) {
-            process.exit(1);
+    lavalinkProcess.on(
+        'error',
+        (error) => {
+            console.error(
+                '❌ Không chạy được Lavalink:',
+                error
+            );
         }
-    });
+    );
+
+    lavalinkProcess.on(
+        'exit',
+        (code) => {
+            console.log(
+                `⚠️ Lavalink đã thoát với code ${code}`
+            );
+
+            // Lavalink tự chết thì cho cả app restart
+            if (!shuttingDown) {
+                process.exit(1);
+            }
+        }
+    );
+
+    // =====================================
+    // CHỜ LAVALINK READY
+    // =====================================
 
     await waitForLavalink();
 
@@ -109,17 +147,44 @@ async function start() {
         '🌋 Lavalink đã mở port 2333!'
     );
 
-    /*
-     * Chưa import bot ở phase test này.
-     * Khi Lavalink chạy ổn mình nối index.js sau.
-     */
+    // =====================================
+    // SAU KHI LAVALINK SỐNG
+    // MỚI KHỞI ĐỘNG DISCORD BOT
+    // =====================================
+
+    console.log(
+        '🤖 Đang khởi động KaiiKaii...'
+    );
+
+    await import('./index.js');
 }
 
+// =====================================
+// SHUTDOWN
+// =====================================
+
 function shutdown() {
+    if (shuttingDown) {
+        return;
+    }
+
     shuttingDown = true;
 
+    console.log(
+        '🛑 Đang tắt KaiiKaii...'
+    );
+
     if (lavalinkProcess) {
-        lavalinkProcess.kill('SIGTERM');
+        try {
+            lavalinkProcess.kill(
+                'SIGTERM'
+            );
+        } catch (error) {
+            console.error(
+                '❌ Không tắt được Lavalink:',
+                error
+            );
+        }
     }
 
     setTimeout(() => {
@@ -127,14 +192,27 @@ function shutdown() {
     }, 1500);
 }
 
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+process.on(
+    'SIGINT',
+    shutdown
+);
 
-start().catch((error) => {
-    console.error(
-        '❌ Bootstrap lỗi:',
-        error
-    );
+process.on(
+    'SIGTERM',
+    shutdown
+);
 
-    process.exit(1);
-});
+// =====================================
+// START
+// =====================================
+
+start().catch(
+    (error) => {
+        console.error(
+            '❌ Bootstrap lỗi:',
+            error
+        );
+
+        process.exit(1);
+    }
+);
