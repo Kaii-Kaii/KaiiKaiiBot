@@ -2,13 +2,10 @@
   "dependencies": {
     "@discordjs/voice": "^0.19.2",
     "discord.js": "^14.27.0",
-    "dotenv": "^17.4.2",
-    "kazagumo": "^3.4.3",
-    "opusscript": "^0.0.8",
-    "shoukaku": "^4.3.0"
+    "dotenv": "^17.4.2"
   },
   "type": "module",
   "scripts": {
-    "start": "node src/bootstrap.js"
+    "start": "node src/index.js"
   }
 }
